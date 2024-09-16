@@ -1,9 +1,12 @@
 <launch>
   <arg name="sync" default="false" />
   <arg name="node_name" default="voxel_grid_filter" />
-  <arg name="points_topic" default="/os_cloud_node/points" />
+  <!-- <arg name="points_topic" default="/os_cloud_node/points" /> -->
+  <arg name="points_topic" default="/livox/lidar" />
   <arg name="output_log" default="false" />
-  <arg name="leaf_size" default="1.0" />
+   <!-- if voxel_leaf_size < 0.1 voxel_grid_filter cannot down sample (It is specification in PCL) -->
+  <!-- <arg name="leaf_size" default="0.5" /> -->
+  <arg name="leaf_size" default="0.00" />
 
   <node pkg="ndt_localizer" name="$(arg node_name)" type="$(arg node_name)">
     <param name="points_topic" value="$(arg points_topic)" />

@@ -61,3 +61,6 @@ target_link_libraries(map_loader ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
 add_executable(ndt_localizer_node nodes/ndt.cpp)
 target_link_libraries(ndt_localizer_node ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
+add_executable(imu_scaler_node nodes/imu_scaler.cpp)
+target_link_libraries(imu_scaler_node ${catkin_LIBRARIES} ${PCL_LIBRARIES})

@@ -1,4 +1,4 @@
-frequency: 100
+frequency: 10
 
 #odom0: /encoder_odom
 #odom0_config: [false, false, false, # x y z
