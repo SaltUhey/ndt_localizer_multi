@@ -16,6 +16,7 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/Imu.h>
 #include <std_msgs/Float32.h>
+#include <nav_msgs/Path.h>
 
 #include <tf2/transform_datatypes.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -40,7 +41,7 @@ struct Pose {
 
 class NdtLocalizer{
 public:
-
+    using PointT = pcl::PointXYZI;
     NdtLocalizer(ros::NodeHandle &nh, ros::NodeHandle &private_nh);
     ~NdtLocalizer();
 
@@ -51,8 +52,10 @@ private:
     ros::Subscriber map_points_sub_;
     ros::Subscriber sensor_points_sub_;
     ros::Subscriber odom_sub_;
+    ros::Subscriber updated_map_points_sub_;
 
     ros::Publisher sensor_aligned_pose_pub_;
+    ros::Publisher sensor_aligned_pose_sensorTF_pub_;
     ros::Publisher ndt_pose_pub_;
     ros::Publisher exe_time_pub_;
     ros::Publisher transform_probability_pub_;
@@ -60,7 +63,8 @@ private:
     ros::Publisher diagnostics_pub_;
     ros::Publisher poly_pub_;
 
-    pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> *ndt_;
+    // pcl::NormalDistributionsTransform<pcl::PointT, pcl::PointT> *ndt_;
+    pcl::NormalDistributionsTransform<PointT, PointT> ndt_;
 
     tf2_ros::Buffer tf2_buffer_;
     tf2_ros::TransformListener tf2_listener_;
@@ -74,10 +78,19 @@ private:
     bool is_ndt_published = false;
     std::string path_file;
     geometry_msgs::PolygonStamped poly;
+    ros::Publisher path_pub_;
+    nav_msgs::Path estimated_path_msg_;
+    ros::Publisher updated_map_points_pub_;
 
     std::string base_frame_;
     std::string map_frame_;
     std::string odom_frame_;
+
+    const std::string path_file_custom = "/home/umelab-uhey/experiment_data/evaluation_path/path.csv";
+    double trans_epsilon_;
+    double step_size_;
+    float resolution_;
+    int max_iterations_;
 
     // init guess for ndt
     geometry_msgs::PoseWithCovarianceStamped initial_pose_cov_msg_;
@@ -102,6 +115,7 @@ private:
                     const geometry_msgs::PoseStamped & pose_msg);
 
     void callback_pointsmap(const sensor_msgs::PointCloud2::ConstPtr & pointcloud2_msg_ptr);
+    void callback_pointsmapupdated(const sensor_msgs::PointCloud2::ConstPtr & pointcloud2_msg_ptr);
     void callback_init_pose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr & pose_conv_msg_ptr);
     void callback_pointcloud(const sensor_msgs::PointCloud2::ConstPtr & pointcloud2_msg_ptr);
     void callback_odom(const nav_msgs::Odometry::ConstPtr & odom_msg_ptr);

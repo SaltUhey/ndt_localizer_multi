@@ -8,18 +8,23 @@ NdtLocalizer::NdtLocalizer(ros::NodeHandle &nh, ros::NodeHandle &private_nh) : n
 
   // Publishers
   sensor_aligned_pose_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("points_aligned", 10);
+  sensor_aligned_pose_sensorTF_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("points_aligned_sensorTF", 1);
   ndt_pose_pub_ = nh_.advertise<nav_msgs::Odometry>("ndt_pose", 10);
   exe_time_pub_ = nh_.advertise<std_msgs::Float32>("exe_time_ms", 10);
   transform_probability_pub_ = nh_.advertise<std_msgs::Float32>("transform_probability", 10);
   iteration_num_pub_ = nh_.advertise<std_msgs::Float32>("iteration_num", 10);
   diagnostics_pub_ = nh_.advertise<diagnostic_msgs::DiagnosticArray>("diagnostics", 10);
   poly_pub_ = nh.advertise<geometry_msgs::PolygonStamped>("mapping_path", 1);
+  path_pub_ = nh_.advertise<nav_msgs::Path>("estimeted_path", 1, true);; 
+  updated_map_points_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/ndt_localizer/updated_map_cloud", 1);
 
   // Subscribers
   initial_pose_sub_ = nh_.subscribe("initialpose", 100, &NdtLocalizer::callback_init_pose, this);
   map_points_sub_ = nh_.subscribe("points_map", 1, &NdtLocalizer::callback_pointsmap, this);
   sensor_points_sub_ = nh_.subscribe("filtered_points", 1, &NdtLocalizer::callback_pointcloud, this);
+  
   odom_sub_ = nh_.subscribe("odom", 10, &NdtLocalizer::callback_odom, this);
+  updated_map_points_sub_ = nh_.subscribe("/map_updater/updated_map_cloud", 1, &NdtLocalizer::callback_pointsmapupdated, this);
 
   diagnostic_thread_ = std::thread(&NdtLocalizer::timer_diagnostic, this);
   diagnostic_thread_.detach();
@@ -139,26 +144,22 @@ void NdtLocalizer::callback_init_pose(
 void NdtLocalizer::callback_pointsmap(
     const sensor_msgs::PointCloud2::ConstPtr &map_points_msg_ptr)
 {
-  const auto trans_epsilon = ndt_->getTransformationEpsilon();
-  const auto step_size = ndt_->getStepSize();
-  const auto resolution = ndt_->getResolution();
-  const auto max_iterations = ndt_->getMaximumIterations();
+  pcl::NormalDistributionsTransform<PointT, PointT> ndt_new;
 
-  pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ>* ndt_new(new pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ>);
-  pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ>* ndt_old = ndt_;
+  ndt_new.setTransformationEpsilon(trans_epsilon_);
+  ndt_new.setStepSize(step_size_);
+  ndt_new.setResolution(resolution_);
+  ndt_new.setMaximumIterations(max_iterations_);
 
-  ndt_new->setTransformationEpsilon(trans_epsilon);
-  ndt_new->setStepSize(step_size);
-  ndt_new->setResolution(resolution);
-  ndt_new->setMaximumIterations(max_iterations);
-
-  pcl::PointCloud<pcl::PointXYZ>::Ptr map_points_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<PointT>::Ptr map_points_ptr(new pcl::PointCloud<PointT>);
   pcl::fromROSMsg(*map_points_msg_ptr, *map_points_ptr);
-  ndt_new->setInputTarget(map_points_ptr);
+  ndt_new.setInputTarget(map_points_ptr);
   // create Thread
   // detach
-  pcl::PointCloud<pcl::PointXYZ>::Ptr output_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-  ndt_new->align(*output_cloud, Eigen::Matrix4f::Identity());
+  pcl::PointCloud<PointT>::Ptr output_cloud(new pcl::PointCloud<PointT>);
+  ndt_new.align(*output_cloud, Eigen::Matrix4f::Identity());
+
+  std::cerr<<"pc_map is published(ndt callback_pointsmap())"<<std::endl;
 
   // swap
   //const auto swap_time = std::chrono::system_clock::now();
@@ -168,8 +169,6 @@ void NdtLocalizer::callback_pointsmap(
   //const auto swap_end_time = std::chrono::system_clock::now();
   //const auto swap_use_time = std::chrono::duration_cast<std::chrono::microseconds>(swap_end_time - swap_time).count() / 1000.0;
   //std::cout << "swap map time: " << swap_use_time << std::endl;
-
-  delete ndt_old;
 }
 
 void NdtLocalizer::callback_odom(const nav_msgs::Odometry::ConstPtr &odom_msg)
@@ -194,8 +193,8 @@ void NdtLocalizer::callback_pointcloud(
   const std::string sensor_frame = sensor_points_sensorTF_msg_ptr->header.frame_id;
   const auto sensor_ros_time = sensor_points_sensorTF_msg_ptr->header.stamp;
 
-  boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> sensor_points_sensorTF_ptr(
-      new pcl::PointCloud<pcl::PointXYZ>);
+  boost::shared_ptr<pcl::PointCloud<PointT>> sensor_points_sensorTF_ptr(
+      new pcl::PointCloud<PointT>);
 
   pcl::fromROSMsg(*sensor_points_sensorTF_msg_ptr, *sensor_points_sensorTF_ptr);
 
@@ -206,8 +205,8 @@ void NdtLocalizer::callback_pointcloud(
   const Eigen::Affine3d odom_to_base_affine = tf2::transformToEigen(*TF_odom_to_base_ptr);
   const Eigen::Matrix4f odom_to_base_matrix = odom_to_base_affine.matrix().cast<float>();
 
-  boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> sensor_points_baselinkTF_ptr(
-      new pcl::PointCloud<pcl::PointXYZ>);
+  boost::shared_ptr<pcl::PointCloud<PointT>> sensor_points_baselinkTF_ptr(
+      new pcl::PointCloud<PointT>);
 
   // get the sensor offset to the base_link
   if (!init_pose)
@@ -224,9 +223,9 @@ void NdtLocalizer::callback_pointcloud(
       *sensor_points_sensorTF_ptr, *sensor_points_baselinkTF_ptr, base_to_sensor_matrix_);
 
   // set input point cloud
-  ndt_->setInputSource(sensor_points_baselinkTF_ptr);
+  ndt_.setInputSource(sensor_points_baselinkTF_ptr);
 
-  if (ndt_->getInputTarget() == nullptr || !is_ndt_published)
+  if (ndt_.getInputTarget() == nullptr || !is_ndt_published)
   {
     ROS_WARN_STREAM_THROTTLE(1, "No MAP!");
     Eigen::Affine3d initial_pose_affine;
@@ -257,15 +256,15 @@ void NdtLocalizer::callback_pointcloud(
   }
  
 
-  pcl::PointCloud<pcl::PointXYZ>::Ptr output_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<PointT>::Ptr output_cloud(new pcl::PointCloud<PointT>);
   const auto align_start_time = std::chrono::system_clock::now();
   key_value_stdmap_["state"] = "Aligning";
-  ndt_->align(*output_cloud, initial_pose_matrix);
+  ndt_.align(*output_cloud, initial_pose_matrix);
   key_value_stdmap_["state"] = "Sleeping";
   const auto align_end_time = std::chrono::system_clock::now();
   const double align_time = std::chrono::duration_cast<std::chrono::microseconds>(align_end_time - align_start_time).count() / 1000.0;
 
-  const Eigen::Matrix4f result_pose_matrix = ndt_->getFinalTransformation();
+  const Eigen::Matrix4f result_pose_matrix = ndt_.getFinalTransformation();
   Eigen::Affine3d result_pose_affine;
   result_pose_affine.matrix() = result_pose_matrix.cast<double>();
   const geometry_msgs::Pose result_pose_msg = tf2::toMsg(result_pose_affine);
@@ -273,8 +272,8 @@ void NdtLocalizer::callback_pointcloud(
   const auto exe_end_time = std::chrono::system_clock::now();
   const double exe_time = std::chrono::duration_cast<std::chrono::microseconds>(exe_end_time - exe_start_time).count() / 1000.0;
 
-  const float transform_probability = ndt_->getTransformationProbability();
-  const int iteration_num = ndt_->getFinalNumIteration();
+  const float transform_probability = ndt_.getTransformationProbability();
+  const int iteration_num = ndt_.getFinalNumIteration();
 
   //Pose tmp;
   //getXYZRPYfromMat(result_pose_matrix, tmp);
@@ -283,7 +282,7 @@ void NdtLocalizer::callback_pointcloud(
   bool is_converged = true;
   static size_t skipping_publish_num = 0;
   if (is_ndt_published &&
-      (iteration_num >= ndt_->getMaximumIterations() + 2 ||
+      (iteration_num >= ndt_.getMaximumIterations() + 2 ||
       transform_probability < converged_param_transform_probability_))
   {
     is_converged = false;
@@ -332,10 +331,33 @@ void NdtLocalizer::callback_pointcloud(
   result_pose_stamped_msg.pose.covariance[28] = deviation_r;
   result_pose_stamped_msg.pose.covariance[35] = deviation_r;
 
+  //add pose to path
+  geometry_msgs::PoseStamped geo_result_pose_stamped_msg;
+  geo_result_pose_stamped_msg.header.stamp = sensor_ros_time;
+  geo_result_pose_stamped_msg.header.frame_id = map_frame_;
+  geo_result_pose_stamped_msg.pose = result_pose_msg;
+
+  estimated_path_msg_.header.stamp = sensor_ros_time;
+  estimated_path_msg_.header.frame_id = map_frame_;
+  estimated_path_msg_.poses.push_back(geo_result_pose_stamped_msg);
+  path_pub_.publish(estimated_path_msg_);
+
+  //save pose to csv file
+  std::ofstream ofs;
+  ofs.open(path_file_custom,std::ios::app);
+  ofs << sensor_ros_time  << "," << geo_result_pose_stamped_msg.pose.position.x << ","<< geo_result_pose_stamped_msg.pose.position.y << "," << geo_result_pose_stamped_msg.pose.position.z << "," << geo_result_pose_stamped_msg.pose.orientation.x << "," << geo_result_pose_stamped_msg.pose.orientation.y << "," << geo_result_pose_stamped_msg.pose.orientation.z<< "," <<geo_result_pose_stamped_msg.pose.orientation.w << "," << transform_probability << std::endl;
+  ofs.close();
+
   if (is_converged || !is_ndt_published)
   {
     ndt_pose_pub_.publish(result_pose_stamped_msg);
     is_ndt_published = true;
+    
+    sensor_msgs::PointCloud2 sensor_points_sensorTF_msg;
+    pcl::toROSMsg(*sensor_points_sensorTF_ptr, sensor_points_sensorTF_msg);
+    sensor_points_sensorTF_msg.header.stamp = sensor_ros_time;
+    sensor_points_sensorTF_msg.header.frame_id = "livox_frame";
+    sensor_aligned_pose_sensorTF_pub_.publish(sensor_points_sensorTF_msg);
   }
 
   // publish tf
@@ -368,7 +390,7 @@ void NdtLocalizer::callback_pointcloud(
   // publish aligned point cloud
   if (is_converged)
   {
-    pcl::PointCloud<pcl::PointXYZ>::Ptr sensor_points_mapTF_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<PointT>::Ptr sensor_points_mapTF_ptr(new pcl::PointCloud<PointT>);
     pcl::transformPointCloud(
         *sensor_points_baselinkTF_ptr, *sensor_points_mapTF_ptr, result_pose_matrix);
     sensor_msgs::PointCloud2 sensor_points_mapTF_msg;
@@ -403,39 +425,73 @@ void NdtLocalizer::callback_pointcloud(
   std::cout << "skipping_publish_num: " << skipping_publish_num << std::endl;
 }
 
+void NdtLocalizer::callback_pointsmapupdated(
+  const sensor_msgs::PointCloud2::ConstPtr & updated_map_points_msg_ptr)
+{
+  pcl::NormalDistributionsTransform<PointT, PointT> ndt_new;
+  ndt_new.setTransformationEpsilon(trans_epsilon_);
+  ndt_new.setStepSize(step_size_);
+  ndt_new.setResolution(resolution_);
+  ndt_new.setMaximumIterations(max_iterations_);
+  pcl::PointCloud<PointT>::Ptr updated_map_points_ptr(new pcl::PointCloud<PointT>);
+  pcl::fromROSMsg(*updated_map_points_msg_ptr, *updated_map_points_ptr);
+  ndt_new.setInputTarget(updated_map_points_ptr);
+
+  ndt_ = ndt_new;
+
+  //to view color histogram----------
+  PointT point;
+  point.x = 999.0;
+  point.y = 999.0;
+  point.z = 0.0;
+  point.intensity = 0.0f;//to view color histogram
+  updated_map_points_ptr->push_back(point);
+  //-------------------
+
+  sensor_msgs::PointCloud2 ros_map_cloud_updated;
+  pcl::toROSMsg(*updated_map_points_ptr, ros_map_cloud_updated);
+  ros_map_cloud_updated.header.frame_id = map_frame_;
+  ros_map_cloud_updated.header.stamp = updated_map_points_msg_ptr->header.stamp;
+  updated_map_points_pub_.publish(ros_map_cloud_updated);
+  std::cerr<<"pc_map is published(ndt callback_pointsmapupdated())"<<std::endl;
+}
+
 void NdtLocalizer::init_params()
 {
 
   private_nh_.getParam("base_frame", base_frame_);
   ROS_INFO("base_frame_id: %s", base_frame_.c_str());
 
-  ndt_ = new pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ>;
+  trans_epsilon_ = ndt_.getTransformationEpsilon();
+  step_size_ = ndt_.getStepSize();
+  resolution_ = ndt_.getResolution();
+  max_iterations_ = ndt_.getMaximumIterations();
 
-  double trans_epsilon = ndt_->getTransformationEpsilon();
-  double step_size = ndt_->getStepSize();
-  double resolution = ndt_->getResolution();
-  int max_iterations = ndt_->getMaximumIterations();
-
-  private_nh_.getParam("trans_epsilon", trans_epsilon);
-  private_nh_.getParam("step_size", step_size);
-  private_nh_.getParam("resolution", resolution);
-  private_nh_.getParam("max_iterations", max_iterations);
+  private_nh_.getParam("trans_epsilon", trans_epsilon_);
+  private_nh_.getParam("step_size", step_size_);
+  private_nh_.getParam("resolution", resolution_);
+  private_nh_.getParam("max_iterations", max_iterations_);
   private_nh_.getParam("path_file", path_file);
 
   map_frame_ = "map";
   odom_frame_ = "odom";
 
-  ndt_->setTransformationEpsilon(trans_epsilon);
-  ndt_->setStepSize(step_size);
-  ndt_->setResolution(resolution);
-  ndt_->setMaximumIterations(max_iterations);
+  ndt_.setTransformationEpsilon(trans_epsilon_);
+  ndt_.setStepSize(step_size_);
+  ndt_.setResolution(resolution_);
+  ndt_.setMaximumIterations(max_iterations_);
 
   ROS_INFO(
-      "trans_epsilon: %lf, step_size: %lf, resolution: %lf, max_iterations: %d", trans_epsilon,
-      step_size, resolution, max_iterations);
+      "trans_epsilon: %lf, step_size: %lf, resolution: %lf, max_iterations: %d", trans_epsilon_,
+      step_size_, resolution_, max_iterations_);
 
   private_nh_.getParam(
       "converged_param_transform_probability", converged_param_transform_probability_);
+  
+  std::ofstream ofs;
+  ofs.open(path_file_custom,std::ios::out);
+  ofs << "time" << "," << "x" << ","<< "y" << ","<< "z" << "," << "ori_x" << "," << "ori_y" << "," << "ori_z" <<"," << "ori_w" << "," << "transformation probability"<<std::endl;
+  ofs.close();
 }
 
 bool NdtLocalizer::get_transform(
